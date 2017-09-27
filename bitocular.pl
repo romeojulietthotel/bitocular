@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 use warnings;
-use Gtk2 qw( -init -threads-init );
+use Gtk2 qw(-init -threads-init);
 use threads;
 use FindBin '$Bin';
 use utf8;
@@ -9,23 +9,45 @@ use Image::Magick;
 use constant TRUE  => 1;
 use constant FALSE => 0;
 
-$pi = 3.141592653589793;
+my $pi = 3.141592653589793;
 
-$n = 0;
+my $n = 0;
+my $maxhisto = 0;
 
-$builder = Gtk2::Builder->new();
+die "No file provided.\ne.g.\t$0 interesting.file\n" unless (-f $ARGV[0]);
+
+sub autoflush {
+    my $h = select($_[0]); $|=$_[1]; select($h);
+}
+
+my $builder = Gtk2::Builder->new();
 $builder->add_from_file("$Bin/bitui.ui");
 
-$gui{$_} = $builder->get_object($_) for (qw ( window1 hd-label entlabel meanlabel chi2label magiclabel corrlabel histoimage poincimage entimage meanimage chi2image corrimage ccorrimage hexframe magicframe entframe histoframe poincframe statusbar ));
+my @uitems = qw(
+    window1 hd-label entlabel meanlabel
+    chi2label magiclabel corrlabel histoimage
+    poincimage entimage meanimage chi2image
+    corrimage ccorrimage hexframe magicframe
+    entframe histoframe poincframe statusbar );
 
-$context_id = $gui{"statusbar"}->get_context_id("");
+for $uitem (@uitems) {
+    $gui{$uitem} = $builder->get_object($uitem)
+}
+
+my $context_id = $gui{"statusbar"}->get_context_id("");
 
 $gui{"window1"}->signal_connect (delete_event => sub {Gtk2->main_quit; FALSE});
 $gui{"window1"}->show_all();
 $gui{"window1"}->set_title($ARGV[0]);
 
-$histo = Image::Magick->new(size=>'256x256');
-$poinc = Image::Magick->new(size=>'256x256');
+my $histo = Image::Magick->new(size=>'256x256');
+my $poinc = Image::Magick->new(size=>'256x256');
+
+my  $ent_img = '/tmp/entmeter.png';
+my  $chi_img = '/tmp/chi2meter.png';
+my $mean_img = '/tmp/meanmeter.png';
+my $corr_img = '/tmp/corrmeter.png';
+
 
 # color gradient
 $rgb[0] = chr(0) x 3;
@@ -39,11 +61,12 @@ for (512..1023) {
              chr(0xbb + 0x44*(($_-512)/(1023-512))).
              chr(0x33 + 0xcc*(($_-512)/(1023-512)));
 }
- 
-&mkhistogram;
 
+my @allthreads;
+# initialize
 
-threads->new(\&worksub);
+push @allthreads, threads->create(\&mkhistogram);
+push @allthreads, threads->create(\&worksub);
 
 Gtk2->main;
 
@@ -53,7 +76,7 @@ sub worksub {
   $gui{"statusbar"}->push($context_id, "hexdump...");
   Gtk2::Gdk::Threads->leave;
 
-  open(S,"hexdump -C -n 384 -v '$ARGV[0]'|head -n 24|");
+  open(S,"hexdump -C -n 384 -v '$ARGV[0]'|head -n 24|") or die "No hexdump exe found.\n";
   ($hd = join("",<S>)) =~ s/\|/│/g;;
   close(S);
   Gtk2::Gdk::Threads->enter;
@@ -80,13 +103,13 @@ sub worksub {
   open(SIS,"ent '$ARGV[0]'|");
   for (<SIS>) {
     chomp();
-    if    (/Entropy = ([\d\.]+)/)     { $ent  = $1; }
-    elsif (/exceed this value (\S+)/) { $chi2 = $1; }
-    elsif (/mean value .* is (\S+)/)  { $mean = $1; }
-    elsif (/coefficient is (\S+)/)    { $corr = $1; }
+    if    (/Entropy = ([\d\.]+)/)          { $ent  = $1; }
+    elsif (/exceed this [^\d]+ ([\d\.]+)/) { $chi2 = $1; }
+    elsif (/mean value .* is ([\d\.]+)/)   { $mean = $1; }
+    elsif (/oefficient is ([-\d\.]+)/)     { $corr = $1; }
   }
   close(SIS);
-
+      
   if    ($chi2 < 1  || $chi2 > 99) { $chirand = "non-random";     }
   elsif ($chi2 < 5  || $chi2 > 95) { $chirand = "suspect";        }
   elsif ($chi2 < 10 || $chi2 > 90) { $chirand = "almost suspect"; }
@@ -101,12 +124,6 @@ sub worksub {
   $gui{"corrlabel"}->set_text("$corr");
   Gtk2::Gdk::Threads->leave;
 
-#  system("convert $Bin/chi2meter.png $Bin/needle.png -geometry +".
-#         int((50-abs($chi2-50))/50*255+2)."+1 -composite /tmp/chi2meter.png");
-#  system("convert $Bin/entmeter.png $Bin/needle.png -geometry +".int($ent/8*255+2).
-#         "+1 -composite /tmp/entmeter.png");
-#  system("convert $Bin/meanmeter.png $Bin/needle.png -geometry +".
-#         int(255-abs(127.5-$mean)/127.5*255+2)."+1 -composite /tmp/meanmeter.png");
 
   $entangle  = -$ent/8 * $pi + $pi/2;
   $meanangle = -(255-abs(127.5-$mean)/127.5) * $pi;# + $pi/2;
@@ -125,25 +142,38 @@ sub worksub {
   $corrangle = -$corr * $pi + $pi/2;
   print "$corrangle corrangle\n";
 
-  $entangle  = $entangle  * .778;# + 20/180*$pi;
-  $meanangle = $meanangle * .778;# + 20/180*$pi;
-  $chiangle  = $chiangle  * .778;# + 20/180*$pi;
-  $corrangle = $corrangle * .778;## + 40/180*$pi;
+  $entangle  = $entangle  * .778;
+  $meanangle = $meanangle * .778;
+  $chiangle  = $chiangle  * .778;
+  $corrangle = $corrangle * .778;
 
+  my $stroke = '-stroke black -strokewidth 2 -draw \'line 37,37';
+  my $init_specs = '-fill transparent -draw \'arc 12,12 64,64 200,340\' ';
+  my $specs = ' -size 75x46 xc:transparent -draw \'circle 38,38 42,38\'';
+    $specs .= ' -stroke \'#cccccc\' -strokewidth 5 ';
+  my $xpspecs = '-fill transparent -draw \'arc 12,12 64,64 200,340\'';
 
-  system("convert -size 75x46 xc:transparent -draw \'circle 38,38 42,38\' -stroke \'#cccccc\' -strokewidth 5 -fill transparent -draw \'arc 12,12 64,64 200,340\' -stroke black -strokewidth 2 -draw \'line 37,37 ".(38-26*sin($entangle)).",".(37-26*cos($entangle))."\' /tmp/entmeter.png"); 
+  my $ent_ang1  = 38-26*sin($entangle);
+  my $ent_ang2  = 37-26*cos($entangle);
+  my $strk_ang1 = 38-26*sin($meanangle);
+  my $strk_ang2 = 37-26*cos($meanangle);
+  my  $chi_ang1 = 38-26*sin($chiangle);
+  my  $chi_ang2 = 37-26*cos($chiangle);
+  my $corr_ang1 = 38-26*sin($corrangle);
+  my $corr_ang2 = 37-26*cos($corrangle);
 
-  system("convert -size 75x46 xc:transparent -draw \'circle 38,38 42,38\' -stroke \'#cccccc\' -strokewidth 5 -fill transparent -draw \'arc 12,12 64,64 200,340\' -stroke black -strokewidth 2 -draw \'line 37,37 ".(38-26*sin($meanangle)).",".(37-26*cos($meanangle))."\' /tmp/meanmeter.png"); 
+  system("convert $specs $init_specs $stroke,$ent_ang1, $ent_ang2\' $ent_img");
+  system("convert $specs $xpspecs $stroke,$strk_ang1, $strk_ang2\' $mean_img"); 
+  system("convert $specs $xpspecs $stroke,$chi_ang1, $chi_ang2\' $chi_img"); 
 
-  system("convert -size 75x46 xc:transparent -draw \'circle 38,38 42,38\' -stroke \'#cccccc\' -strokewidth 5 -fill transparent -draw \'arc 12,12 64,64 200,340\' -stroke black -strokewidth 2 -draw \'line 37,37 ".(38-26*sin($chiangle)).",".(37-26*cos($chiangle))."\' /tmp/chi2meter.png"); 
-
-  system("convert -size 75x46 xc:transparent -draw \'circle 38,38 42,38\' -stroke \'#cccccc\' -strokewidth 5 -fill transparent -draw \'arc 12,12 64,64 200,340\' ".($corr ne "undefined" && "-stroke black -strokewidth 2 -draw \'line 37,37 ".(38-26*sin($corrangle)).",".(37-26*cos($corrangle))."\'")." /tmp/corrmeter.png"); 
-
+  if ($corr ne "undefined") {
+      system("convert $specs $xpspecs $stroke,$corr_ang1, $corr_ang2\' $corr_img"); 
+  }
   Gtk2::Gdk::Threads->enter;
-  $gui{"entimage"}->set_from_file("/tmp/entmeter.png");
-  $gui{"chi2image"}->set_from_file("/tmp/chi2meter.png");
-  $gui{"meanimage"}->set_from_file("/tmp/meanmeter.png");
-  $gui{"corrimage"}->set_from_file("/tmp/corrmeter.png");
+  $gui{"entimage"}->set_from_file("$ent_img");
+  $gui{"chi2image"}->set_from_file("$chi_img");
+  $gui{"meanimage"}->set_from_file("$mean_img");
+  $gui{"corrimage"}->set_from_file("$corr_img");
   Gtk2::Gdk::Threads->leave;
   
   Gtk2::Gdk::Threads->enter;
@@ -167,14 +197,16 @@ sub worksub {
     if (@corrarr > 256) {
       for $c (1..256) {
         for $b (0..7) {
-          $corr[$b][$c-1] += (($corrarr[$c] >> (7-$b)) & 1) & (($corrarr[0] >> (7-$b)) & 1);
+          my $i = (7-$b);
+          my $j = (($corrarr[$c] >> $i) & 1) & (($corrarr[0] >> $i) & 1);
+          $corr[$b][$c-1] += $j; 
         }
       }
       shift(@corrarr);
     }
 
-    if ($n % 5000 == 0) {
-      &mkhistogram;
+    if ($n % 4096 == 0) {
+      push @allthreads, threads->create(\&mkhistogram);
       Gtk2::Gdk::Threads->enter;
       $gui{"histoframe"}->set_sensitive(TRUE);
       $gui{"poincframe"}->set_sensitive(TRUE);
@@ -183,7 +215,7 @@ sub worksub {
     }
   }
   close(SIS);
-  &mkhistogram;
+  push @allthreads, threads->create(\&mkhistogram);
   
   Gtk2::Gdk::Threads->enter;
   $gui{"histoframe"}->set_sensitive(TRUE);
@@ -196,24 +228,29 @@ sub worksub {
 
 }
 
-sub mkhistogram {
+sub histo {
+
   open(IM, "|convert -depth 8 -size 256x256 rgb:- /tmp/histo.png");
+  autoflush(IM, 1);
+
   for $y (0..255) {
     for $x (0..255) {
-      if (($maxhisto // 0) > 0 && ($histo[$x] // 0) / $maxhisto * 255 >= 256 - $y) {
-        print IM $rgb[768];
+      if ( (($maxhisto // 0) > 0) &&
+        ( (($histo[$x] // 0) / $maxhisto * 255 >= 256 - $y) )) {
+          print IM $rgb[768];
       } else {
         print IM chr(0) x 3;
       }
     }
   }
   close(IM);
+}
 
-  Gtk2::Gdk::Threads->enter;
-  $gui{"histoimage"}->set_from_file ("/tmp/histo.png");
-  Gtk2::Gdk::Threads->leave;
+sub poinc {
 
   open(IM, "|convert -depth 8 -size 256x256 rgb:- /tmp/poinc.png");
+  autoflush(IM, 1);
+
   for $y (0..255) {
     for $x (0..255) {
       if (($maxpoinc // 0) > 0 && ($poinc[$x][$y] // 0)/$maxpoinc > 0) {
@@ -228,12 +265,13 @@ sub mkhistogram {
     }
   }
   close(IM);
+}
 
-  Gtk2::Gdk::Threads->enter;
-  $gui{"poincimage"}->set_from_file ("/tmp/poinc.png");
-  Gtk2::Gdk::Threads->leave;
+sub ccorr {
 
   open(IM, "|convert -depth 8 -size 256x256 rgb:- /tmp/ccorr.png");
+  autoflush(IM, 1);
+
   for $y (0..255) {
     for $x (0..255) {
       if ($x % 32 == 0) {
@@ -244,8 +282,27 @@ sub mkhistogram {
     }
   }
   close(IM);
-  
+}
+
+sub mkhistogram {
+
+  push @allthreads, threads->create(\&histo);
+  push @allthreads, threads->create(\&poinc);
+  push @allthreads, threads->create(\&ccorr);
+    
   Gtk2::Gdk::Threads->enter;
+  $gui{"histoimage"}->set_from_file ("/tmp/histo.png");
+  $gui{"poincimage"}->set_from_file ("/tmp/poinc.png");
   $gui{"ccorrimage"}->set_from_file ("/tmp/ccorr.png");
   Gtk2::Gdk::Threads->leave;
 }
+
+
+exit 0;
+
+#for my $athread (0..$#allthreads) {
+#    $allthreads[$athread]->join();
+#}
+
+
+

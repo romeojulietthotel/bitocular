@@ -7,7 +7,7 @@ A tool to quickly examine the general structure of a file. Inspired by [baudline
 Features
 --------
 
-![Screenshot](http://www.cs.helsinki.fi/u/okraisan/bitshot-readme.png)
+![Screenshot](bitocular-screenshot.jpg)
 
 (1) hexdump: A hex dump.
 
